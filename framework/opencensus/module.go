@@ -1,12 +1,14 @@
 package opencensus
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	"contrib.go.opencensus.io/exporter/jaeger"
 	"contrib.go.opencensus.io/exporter/prometheus"
@@ -14,6 +16,8 @@ import (
 	"flamingo.me/dingo"
 	openzipkin "github.com/openzipkin/zipkin-go"
 	reporterHttp "github.com/openzipkin/zipkin-go/reporter/http"
+	"go.opencensus.io/metric"
+	"go.opencensus.io/metric/metricproducer"
 	"go.opencensus.io/plugin/ochttp"
 	"go.opencensus.io/stats"
 	"go.opencensus.io/stats/view"
@@ -56,12 +60,15 @@ func (rt *correlationIDInjector) RoundTrip(req *http.Request) (*http.Response, e
 
 // Module registers the opencensus module which in turn enables jaeger & co
 type Module struct {
-	Endpoint       string `inject:"config:opencensus.jaeger.endpoint"`
-	ServiceName    string `inject:"config:opencensus.serviceName"`
-	ServiceAddr    string `inject:"config:opencensus.serviceAddr"`
-	JaegerEnable   bool   `inject:"config:opencensus.jaeger.enable"`
-	ZipkinEnable   bool   `inject:"config:opencensus.zipkin.enable"`
-	ZipkinEndpoint string `inject:"config:opencensus.zipkin.endpoint"`
+	RuntimeMetricsEnable      bool   `inject:"config:opencensus.runtimeMetrics.enable"`
+	RuntimeMetricsIntervalSec int    `inject:"config:opencensus.runtimeMetrics.interval"`
+	RuntimeMetricsPrefix      string `inject:"config:opencensus.runtimeMetrics.prefix"`
+	ServiceName               string `inject:"config:opencensus.serviceName"`
+	ServiceAddr               string `inject:"config:opencensus.serviceAddr"`
+	JaegerEndpoint            string `inject:"config:opencensus.jaeger.endpoint"`
+	JaegerEnable              bool   `inject:"config:opencensus.jaeger.enable"`
+	ZipkinEnable              bool   `inject:"config:opencensus.zipkin.enable"`
+	ZipkinEndpoint            string `inject:"config:opencensus.zipkin.endpoint"`
 }
 
 // find first not-loopback ipv4 address
@@ -96,11 +103,26 @@ func (m *Module) Configure(injector *dingo.Injector) {
 		trace.ApplyConfig(trace.Config{DefaultSampler: trace.NeverSample()})
 		http.DefaultTransport = &correlationIDInjector{next: &ochttp.Transport{Base: http.DefaultTransport}}
 
+		reg := metric.NewRegistry()
+		metricproducer.GlobalManager().AddProducer(reg)
+
+		if m.RuntimeMetricsEnable {
+			opt := GaugeOptions{
+				Prefix: m.RuntimeMetricsPrefix,
+			}
+
+			runtimeGauges, err := NewRuntimeGauges(reg, opt)
+			if err != nil {
+				log.Fatal(err)
+			}
+			go runtimeGauges.StartRecording(context.Background(), time.Duration(m.RuntimeMetricsIntervalSec)*time.Second)
+		}
+
 		if m.JaegerEnable {
 			// Register the Jaeger exporter to be able to retrieve
 			// the collected spans.
 			exporter, err := jaeger.NewExporter(jaeger.Options{
-				CollectorEndpoint: m.Endpoint,
+				CollectorEndpoint: m.JaegerEndpoint,
 				Process: jaeger.Process{
 					ServiceName: m.ServiceName,
 					Tags: []jaeger.Tag{
@@ -130,6 +152,7 @@ func (m *Module) Configure(injector *dingo.Injector) {
 			trace.RegisterExporter(exporter)
 		}
 	})
+
 	exporter, err := prometheus.NewExporter(prometheus.Options{})
 	if err != nil {
 		log.Fatal(err)
@@ -142,12 +165,15 @@ func (m *Module) Configure(injector *dingo.Injector) {
 func (m *Module) DefaultConfig() config.Map {
 	return config.Map{
 		"opencensus": config.Map{
-			"jaeger.enable":   false,
-			"jaeger.endpoint": "http://localhost:14268/api/traces",
-			"zipkin.enable":   false,
-			"zipkin.endpoint": "http://localhost:9411/api/v2/spans",
-			"serviceName":     "flamingo",
-			"serviceAddr":     ":13210",
+			"runtimeMetrics.enable":   true,
+			"runtimeMetrics.interval": 15,
+			"runtimeMetrics.prefix":   "process_",
+			"jaeger.enable":           false,
+			"jaeger.endpoint":         "http://localhost:14268/api/traces",
+			"zipkin.enable":           false,
+			"zipkin.endpoint":         "http://localhost:9411/api/v2/spans",
+			"serviceName":             "flamingo",
+			"serviceAddr":             ":13210",
 			"tracing": config.Map{
 				"sampler": config.Map{
 					"whitelist":        config.Slice{},

@@ -8,6 +8,26 @@ Opencensus allows you to collect data for your application and process them via 
 The core package already collects metrics automatically for routers and prefixrouters rendering times out of the box.
 Also traces for request handling are done by default.
 
+## Default runtime metrics
+
+By default runtime metrics will be recorded. The following configuration is available:
+
+```yaml
+opencensus:
+  runtimeMetrics:
+    enable: true # default: true
+    interval: 15 # interval in seconds. default: 15
+    prefix: myapp # prefix metric names. default: "process_"
+```
+
+The following metrics will be recorded:
+- process heap allocation
+- number of objects allocated on the heap
+- number of objects released from the heap
+- memory used by stack spans and OS thread stacks
+- number of pointer lookups
+- number of current goroutines
+
 ## Adding your own metrics
 
 The most likely usecase is in a controller, but to have your own metric, please import the following packages:
